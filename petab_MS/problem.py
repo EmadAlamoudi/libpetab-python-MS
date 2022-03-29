@@ -6,10 +6,12 @@ from warnings import warn
 import numbers
 import pandas as pd
 import libsbml
-from typing import Optional, List, Union, Dict, Iterable
+from typing import Optional, List, Union, Dict, Iterable, Callable
 from . import (parameter_mapping, measurements, conditions, parameters,
                sampling, sbml, yaml, core, observables, format_version)
 from .C import *  # noqa: F403
+from . import observables
+from . import obcetive_function as obj_fun
 
 
 class Problem:
@@ -41,7 +43,8 @@ class Problem:
                  measurement_df: pd.DataFrame = None,
                  parameter_df: pd.DataFrame = None,
                  visualization_df: pd.DataFrame = None,
-                 observable_df: pd.DataFrame = None):
+                 observable_df: pd.DataFrame = None,
+                 objective_callable: Callable = None):
 
         self.condition_df: Optional[pd.DataFrame] = condition_df
         self.measurement_df: Optional[pd.DataFrame] = measurement_df
@@ -49,6 +52,7 @@ class Problem:
         self.visualization_df: Optional[pd.DataFrame] = visualization_df
         self.observable_df: Optional[pd.DataFrame] = observable_df
         self.model_file = model_file
+        self.objective_callable = objective_callable
 
 
     def __getstate__(self):
@@ -82,7 +86,8 @@ class Problem:
                    condition_file: str = None,
                    measurement_file: Union[str, Iterable[str]] = None,
                    parameter_file: Union[str, List[str]] = None,
-                   observable_files: Union[str, Iterable[str]] = None
+                   observable_files: Union[str, Iterable[str]] = None,
+                   objective_file: str = None
                    ) -> 'Problem':
         """
         Factory method to load model and tables from files.
@@ -92,6 +97,8 @@ class Problem:
             measurement_file: PEtab measurement table
             parameter_file: PEtab parameter table
             observable_files: PEtab observables tables
+            objective_file: PEtab objective function Callable
+
         """
 
         condition_df = measurement_df = parameter_df = None
@@ -111,12 +118,15 @@ class Problem:
             # If there are multiple tables, we will merge them
             observable_df = core.concat_tables(
                 observable_files, observables.get_observable_df)
+        if objective_file:
+            ojbective_callable = obj_fun.get_objective_function(objective_file)
 
         return Problem(model_file=model_file,
                        condition_df=condition_df,
                        measurement_df=measurement_df,
                        parameter_df=parameter_df,
-                       observable_df=observable_df
+                       observable_df=observable_df,
+                       objective_callable=ojbective_callable
                        )
 
     @staticmethod
@@ -166,7 +176,9 @@ class Problem:
             parameter_file=parameter_file,
             observable_files=[
                 os.path.join(path_prefix, f)
-                for f in problem0.get(OBSERVABLE_FILES, [])]
+                for f in problem0.get(OBSERVABLE_FILES, [])],
+            objective_file=os.path.join(path_prefix,
+                                        problem0[OBJECTIVE_FILE][0])
         )
 
     @staticmethod
@@ -674,6 +686,20 @@ class Problem:
         return sampling.sample_parameter_startpoints(
             self.parameter_df, n_starts=n_starts)
 
+    def get_objective_function(self) -> Callable:
+        """get a callable for the objective function.
+        Returns
+        -------
+        objective_function: A callable that is used to calculate the objective
+        function.
+        """
+        return get_objective_function(observable_df=self.observable_df)
+
+
+def get_objective_function(observable_df):
+    objective_function = observables.get_objective_function(observable_df)
+    return objective_function
+
 
 def get_default_condition_file_name(model_name: str, folder: str = ''):
     """Get file name according to proposed convention"""
@@ -708,20 +734,32 @@ def get_default_sbml_file_name(model_name: str, folder: str = ''):
 
 
 def check_value_type(value):
-    """check the type of measurement column
+    """check the type of external file
             Parameters
         ----------
         value:
-            the first value of the measurement column.
+            the first value of the external file.
 
         Returns
         -------
         result:
-            "regular" if the value is of a type int, "external_file"
-             if it is of a type string (external file).
+            "regular" if the value is of a type int, "data_file" if it is of a
+             type .csv (external file), "script_file" if it is of a type .r
+             or .py.
+.
 
     """
-    if isinstance(value,numbers.Number):
+    if isinstance(value, numbers.Number):
         return "regular"
     elif isinstance(value, str):
-        return "external_file"
+        a_split = value.split(';')
+        filename, file_extension = os.path.splitext(a_split[0])
+        if file_extension.lower() == '.r':
+            return "r_file"
+        elif file_extension.lower() == '.py':
+            return "python_file"
+        elif file_extension.lower() == '.csv':
+            return "csv_file"
+        else:
+            raise ValueError("Non supported external file "
+                             f"type {file_extension}")

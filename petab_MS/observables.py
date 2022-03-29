@@ -185,3 +185,4 @@ def create_observable_df() -> pd.DataFrame:
     df = pd.DataFrame(data={col: [] for col in OBSERVABLE_DF_COLS})
 
     return df
+
